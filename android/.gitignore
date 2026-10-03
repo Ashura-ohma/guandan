@@ -1,0 +1,7 @@
+build/
+__pycache__/
+*.jks
+*.keystore
+*.p12
+*.pem
+*password*

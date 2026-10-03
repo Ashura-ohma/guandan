@@ -1,0 +1,12 @@
+android/build/
+__pycache__/
+*.pyc
+node_modules/
+*.jks
+*.keystore
+*.p12
+*.pem
+*.key
+.env
+.env.*
+.DS_Store
