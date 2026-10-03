@@ -81,3 +81,7 @@ substitution, an independent exhaustive wildcard oracle, brute-force move
 coverage, invalid-command atomicity, passing/接风, upgrades, A clearing,
 AI hidden-hand independence, and 250 complete reproducible games with
 card-conservation and termination assertions.
+
+## Public trick display (1.1.0)
+
+`getTrickTimeline(state)` reconstructs completed and ongoing tricks from public history; `getCurrentTrick(state)` returns four-seat last plays, last actions, and current winner. Passes do not erase a seat’s last play. A closed trick clears the current table immediately while remaining replayable. These helpers do not mutate saved state and accept version-1 histories, including missing closure markers. See `tests/tricks.test.js` for an independent incremental oracle over full games.

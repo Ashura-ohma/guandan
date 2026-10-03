@@ -308,6 +308,94 @@ export function pass(state, seat) {
   return state;
 }
 
+function emptyTrickDisplay(number) {
+  return { number, actions: [], plays: [null, null, null, null],
+    lastActions: [null, null, null, null], winnerSeat: null, closed: false };
+}
+function isHistoryAction(action) {
+  return action && (action.type === 'play' || action.type === 'pass')
+    && Number.isInteger(action.seat) && action.seat >= 0 && action.seat < 4;
+}
+/**
+ * Reconstruct non-empty tricks from public history, without changing saved state.
+ * Each seat retains its most recent successful play even if it later passes;
+ * lastActions independently records its latest play/pass. Actions and cards are
+ * read-only references to history; all grouping objects and arrays are fresh.
+ *
+ * Version-1 saves need no migration. Explicit trickClosed markers are respected,
+ * and older histories without them are recovered from consecutive passes and
+ * the number of active players at that point. An immediate round-ending play
+ * stays in the final open trick because no pass-closure happened.
+ */
+export function getTrickTimeline(state) {
+  const history = Array.isArray(state?.history) ? state.history.filter(isHistoryAction) : [];
+  const hasHands = Array.isArray(state?.hands) && state.hands.length === 4
+    && state.hands.every(Array.isArray);
+  // Rewind public card counts so later finishes cannot close an earlier trick.
+  const remaining = hasHands ? state.hands.map(hand => hand.length) : null;
+  if (remaining) for (const action of history)
+    if (action.type === 'play') remaining[action.seat] += action.cards?.length || 0;
+  const active = new Set([0, 1, 2, 3].filter(seat => !remaining || remaining[seat] > 0));
+  const timeline = [];
+  let current = null, passes = 0;
+  for (const action of history) {
+    if (!current || current.closed) {
+      current = emptyTrickDisplay(timeline.length + 1);
+      timeline.push(current);
+      passes = 0;
+    }
+    current.actions.push(action);
+    current.lastActions[action.seat] = action;
+    if (action.type === 'play') {
+      current.plays[action.seat] = action;
+      current.winnerSeat = action.seat;
+      passes = 0;
+      if (remaining) remaining[action.seat] -= action.cards?.length || 0;
+      if (action.finish || (remaining && remaining[action.seat] === 0)) active.delete(action.seat);
+    } else {
+      passes++;
+      const needed = active.size - (active.has(current.winnerSeat) ? 1 : 0);
+      if (action.trickClosed || (current.winnerSeat !== null && needed > 0 && passes >= needed))
+        current.closed = true;
+    }
+  }
+  // Some legacy serializers copied lastAction before marking history's closure.
+  // The saved free-lead position is authoritative for the final pass group.
+  if (current && !state?.result && state?.trick === null && current.actions.at(-1)?.type === 'pass')
+    current.closed = true;
+  return timeline;
+}
+
+/**
+ * Four-seat display for the current trick. A pass-closed trick clears immediately;
+ * it remains available through getTrickTimeline. The actual current winner comes
+ * only from state.trick, so old plays are never highlighted as still winning.
+ */
+export function getCurrentTrick(state) {
+  const timeline = getTrickTimeline(state);
+  const latest = timeline.at(-1);
+  const current = latest && !latest.closed ? latest : emptyTrickDisplay((latest?.number || 0) + 1);
+  const winner = state?.trick;
+  current.winnerSeat = Number.isInteger(winner?.seat) && winner.seat >= 0 && winner.seat < 4
+    ? winner.seat : null;
+  // Tolerate old/minimal snapshots that saved the table but omitted its history.
+  if (current.winnerSeat !== null && !current.plays[current.winnerSeat]) {
+    const action = { ...winner, type: 'play' };
+    current.plays[current.winnerSeat] = action;
+    current.lastActions[current.winnerSeat] = action;
+  }
+  if (!historyContainsLastAction(current.actions, state?.lastAction) && winner
+      && isHistoryAction(state?.lastAction)) {
+    current.lastActions[state.lastAction.seat] = state.lastAction;
+  }
+  return current;
+}
+
+function historyContainsLastAction(actions, action) {
+  return !action || actions.some(item => item === action
+    || (action.number !== undefined && item.number === action.number));
+}
+
 function groupCounts(cards, level) {
   const counts = new Map();
   for (const c of cards) if (!isWild(c, level)) counts.set(c.rank, (counts.get(c.rank) || 0) + 1);

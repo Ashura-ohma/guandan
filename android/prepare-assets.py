@@ -7,14 +7,15 @@ import shutil
 
 root = Path(__file__).resolve().parents[1]
 out = root / 'android/build/assets/www'
+files = ('index.html', 'style.css', 'game.js', 'engine.js', 'audio.js', 'hand-layout.js')
+for filename in files:
+    if not (root / filename).is_file():
+        raise SystemExit(f'Missing game asset: {filename}')
 if out.exists():
     shutil.rmtree(out)
 out.mkdir(parents=True)
-files = ('index.html', 'style.css', 'game.js', 'engine.js')
 for filename in files:
     source = root / filename
-    if not source.is_file():
-        raise SystemExit(f'Missing game asset: {filename}')
     shutil.copy2(source, out / filename)
 html = (out / 'index.html').read_text()
 csp = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'"

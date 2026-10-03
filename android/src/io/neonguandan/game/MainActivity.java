@@ -3,7 +3,8 @@ package io.neonguandan.game;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
-import android.net.Uri;
+import android.content.pm.ActivityInfo;
+import android.content.res.Configuration;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.DisplayCutout;
@@ -12,6 +13,7 @@ import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
+import android.webkit.ValueCallback;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -24,16 +26,19 @@ import java.util.Map;
 
 /** Offline-only host. No permissions, network access, JS bridge or remote navigation. */
 public final class MainActivity extends Activity {
-    private static final String HOST = "appassets.androidplatform.net";
-    private static final String HOME = "https://" + HOST + "/assets/www/index.html";
+    private static final String HOME = NavigationPolicy.HOME;
     private WebView web;
+    private FrameLayout container;
     private boolean resumed;
+    private int lifecycleGeneration;
     private AlertDialog exitDialog;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        // Follow all sensor orientations, even when the system rotation setting is locked.
+        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        FrameLayout container = new FrameLayout(this);
+        container = new FrameLayout(this);
         container.setBackgroundColor(0xff081c22);
         // Respect display cutouts in either orientation, including Android 15 edge-to-edge.
         container.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
@@ -71,16 +76,16 @@ public final class MainActivity extends Activity {
         settings.setMediaPlaybackRequiresUserGesture(true);
         web.setWebViewClient(new WebViewClient() {
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                return serveAsset(request.getUrl(), request.getMethod());
+                return serveAsset(request.getUrl().toString(), request.getMethod());
             }
             @Override public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
-                return serveAsset(Uri.parse(url), "GET");
+                return serveAsset(url, "GET");
             }
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return !HOME.equals(request.getUrl().toString());
+                return routeNavigation(view, request.getUrl().toString(), request.isForMainFrame(), request.getMethod());
             }
             @Override public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                return !HOME.equals(url);
+                return routeNavigation(view, url, true, "GET");
             }
             @Override public void onPageFinished(WebView view, String url) {
                 dispatchLifecycle(resumed && hasWindowFocus() && (exitDialog == null || !exitDialog.isShowing()));
@@ -92,20 +97,27 @@ public final class MainActivity extends Activity {
         web.loadUrl(HOME);
     }
 
-    private WebResourceResponse serveAsset(Uri uri, String method) {
-        String path = uri.getPath();
-        if ("GET".equals(method) && "https".equals(uri.getScheme()) && HOST.equals(uri.getHost())
-                && uri.getPort() == -1 && uri.getUserInfo() == null && uri.getQuery() == null) {
-            String name = path == null ? "" : path.substring(path.lastIndexOf('/') + 1);
-            if (("/assets/www/" + name).equals(path) && (name.equals("index.html") || name.equals("game.js")
-                    || name.equals("engine.js") || name.equals("style.css"))) {
-                String mime = name.endsWith(".js") ? "application/javascript" : name.endsWith(".css") ? "text/css" : "text/html";
-                Map<String, String> headers = new HashMap<String, String>();
-                headers.put("X-Content-Type-Options", "nosniff");
-                headers.put("Cache-Control", "no-cache");
-                try { return new WebResourceResponse(mime, "UTF-8", 200, "OK", headers, getAssets().open("www/" + name)); }
-                catch (IOException ignored) { }
-            }
+    private boolean routeNavigation(WebView view, String url, boolean mainFrame, String method) {
+        NavigationPolicy.Action action = NavigationPolicy.route(url, view.getUrl(), mainFrame, method);
+        if (action == NavigationPolicy.Action.HOME) return false;
+        if (action == NavigationPolicy.Action.LANDSCAPE) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        } else if (action == NavigationPolicy.Action.AUTO) {
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR);
+        }
+        // Local toolbar commands never navigate or reload the running game.
+        return true;
+    }
+
+    private WebResourceResponse serveAsset(String url, String method) {
+        String name = ResourcePolicy.assetName(url, method);
+        if (name != null) {
+            String mime = name.endsWith(".js") ? "application/javascript" : name.endsWith(".css") ? "text/css" : "text/html";
+            Map<String, String> headers = new HashMap<String, String>();
+            headers.put("X-Content-Type-Options", "nosniff");
+            headers.put("Cache-Control", "no-cache");
+            try { return new WebResourceResponse(mime, "UTF-8", 200, "OK", headers, getAssets().open("www/" + name)); }
+            catch (IOException ignored) { }
         }
         return new WebResourceResponse("text/plain", "UTF-8", 404, "Not Found", null,
                 new ByteArrayInputStream("Offline resource unavailable".getBytes(StandardCharsets.UTF_8)));
@@ -119,18 +131,41 @@ public final class MainActivity extends Activity {
     }
 
     private void dispatchLifecycle(boolean active) {
-        if (web != null) web.evaluateJavascript("window.dispatchEvent(new Event('guandan-" + (active ? "resume" : "pause") + "'))", null);
+        dispatchLifecycle(active, null);
+    }
+
+    private void dispatchLifecycle(boolean active, ValueCallback<String> callback) {
+        if (web != null) web.evaluateJavascript("window.dispatchEvent(new Event('guandan-" + (active ? "resume" : "pause") + "'))", callback);
+    }
+
+    @Override public void onConfigurationChanged(Configuration configuration) {
+        super.onConfigurationChanged(configuration);
+        // Keep the same Activity/WebView and reapply cutout insets after a rotation.
+        makeImmersive();
+        if (container != null) container.requestApplyInsets();
     }
 
     @Override protected void onPause() {
         resumed = false;
-        dispatchLifecycle(false);
-        if (web != null) { web.onPause(); web.pauseTimers(); }
+        final int generation = ++lifecycleGeneration;
+        final WebView pausedWeb = web;
+        // pauseTimers does not suspend WebAudio. Let the frontend's synchronous
+        // guandan-pause handler mute/suspend audio and stop AI before freezing JS.
+        dispatchLifecycle(false, new ValueCallback<String>() {
+            @Override public void onReceiveValue(String ignored) {
+                // A quick return or a destroyed WebView invalidates this callback.
+                if (web == pausedWeb && web != null && !resumed && generation == lifecycleGeneration) {
+                    web.onPause();
+                    web.pauseTimers();
+                }
+            }
+        });
         super.onPause();
     }
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        ++lifecycleGeneration;
         if (web != null) { web.resumeTimers(); web.onResume(); }
         makeImmersive();
         dispatchLifecycle(hasWindowFocus() && (exitDialog == null || !exitDialog.isShowing()));
@@ -157,6 +192,7 @@ public final class MainActivity extends Activity {
         exitDialog.show();
     }
     @Override protected void onDestroy() {
+        ++lifecycleGeneration;
         if (exitDialog != null) { exitDialog.setOnDismissListener(null); exitDialog.dismiss(); exitDialog = null; }
         if (web != null) { web.destroy(); web = null; }
         super.onDestroy();

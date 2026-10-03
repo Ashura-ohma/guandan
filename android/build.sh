@@ -13,16 +13,19 @@ rm -rf build/classes build/dex
 mkdir -p build/classes build/dex
 exec > >(tee build/verification.txt) 2>&1
 python3 prepare-assets.py
+python3 test-wrapper.py
+python3 test-package.py
 "$AAPT" package -f -M AndroidManifest.xml -S res -A build/assets -I "$FRAMEWORK_RES" -F build/unsigned.apk
-"$JAVA" com.sun.tools.javac.Main -source 8 -target 8 -classpath "$ANDROID_JAR" -d build/classes src/io/neonguandan/game/MainActivity.java
+mapfile -t SOURCES < <(find src -name '*.java' | sort)
+"$JAVA" com.sun.tools.javac.Main -source 8 -target 8 -classpath "$ANDROID_JAR" -d build/classes "${SOURCES[@]}"
 mapfile -t CLASSES < <(find build/classes -name '*.class')
 "$JAVA" -cp "$D8_JAR" com.android.tools.r8.D8 --min-api 26 --lib "$ANDROID_JAR" --output build/dex "${CLASSES[@]}"
 (cd build/dex && zip -q -u ../unsigned.apk classes.dex)
 "$ZIPALIGN" -f 4 build/unsigned.apk build/aligned.apk
-"$JAVA" -jar "$APKSIGNER_JAR" sign --ks "$SIGNING_KEYSTORE" --ks-pass "file:$SIGNING_PASSWORD_FILE" --out build/guandan-1.0.0.apk build/aligned.apk
-"$JAVA" -jar "$APKSIGNER_JAR" verify --verbose --print-certs build/guandan-1.0.0.apk
-"$ZIPALIGN" -c 4 build/guandan-1.0.0.apk
-"$AAPT" dump badging build/guandan-1.0.0.apk
+"$JAVA" -jar "$APKSIGNER_JAR" sign --ks "$SIGNING_KEYSTORE" --ks-pass "file:$SIGNING_PASSWORD_FILE" --out build/guandan-1.2.0.apk build/aligned.apk
+"$JAVA" -jar "$APKSIGNER_JAR" verify --verbose --print-certs build/guandan-1.2.0.apk
+"$ZIPALIGN" -c 4 build/guandan-1.2.0.apk
+"$AAPT" dump badging build/guandan-1.2.0.apk
 python3 verify-package.py
-unzip -t build/guandan-1.0.0.apk | tail -1
-sha256sum build/guandan-1.0.0.apk > build/guandan-1.0.0.apk.sha256
+unzip -t build/guandan-1.2.0.apk | tail -1
+sha256sum build/guandan-1.2.0.apk > build/guandan-1.2.0.apk.sha256

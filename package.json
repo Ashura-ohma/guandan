@@ -1,1 +1,1 @@
-{"name":"neon-guandan","version":"1.0.0","private":true,"type":"module","scripts":{"test":"node --test tests/*.test.js","start":"python3 -m http.server 8080"}}
+{"name":"neon-guandan","version":"1.2.0","private":true,"type":"module","scripts":{"test":"node --test tests/*.test.js","start":"python3 -m http.server 8080"}}
